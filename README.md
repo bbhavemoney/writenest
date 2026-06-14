@@ -1,5 +1,7 @@
 # WriteNest
 
+Live Demo: https://writenest-one.vercel.app
+
 WriteNest 是一個面向學生、小說作者與長篇文字創作者的前端寫作工作台。它不是 AI 代寫工具，而是幫助使用者整理文章、角色、關係圖、靈感詞語與排版流程的本地化編輯工具 demo。
 
 ## 核心功能
@@ -78,4 +80,3 @@ Vercel 建議設定：
 - 匯出 PDF / DOCX。
 - 自動排版規則自訂。
 - 協作與評論功能。
-
