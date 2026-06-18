@@ -93,59 +93,16 @@ export const defaultWorkspaceData = {
       { id: "rel-xu-lin", from: "char-xu", to: "char-lin", label: "暗戀", color: "#8b7fd6" },
     ],
   },
-  savedWords: [
-    {
-      id: "word-moonlight",
-      term: "清輝",
-      word: "清輝",
-      tag: "氛圍",
-      tags: ["月色", "古風", "景物"],
-      tone: "古風",
-      meaning: "清冷明亮的光，多用於月光或燈影。",
-      example: "月色的清輝落滿渡口，照得舊木匣邊角發白。",
-    },
-    {
-      id: "word-cold-lamp",
-      term: "寒燈",
-      word: "寒燈",
-      tag: "景物",
-      tags: ["夜晚", "孤寂", "古風"],
-      tone: "悲傷",
-      meaning: "清冷的燈火，常用來描寫夜晚孤寂氣氛。",
-      example: "客棧寒燈未滅，像仍有人在等一個不歸的人。",
-    },
-    {
-      id: "word-old-dream",
-      term: "舊夢",
-      word: "舊夢",
-      tag: "情緒",
-      tags: ["回憶", "遺憾", "往事"],
-      tone: "溫柔",
-      meaning: "過去的夢想或記憶，帶有懷念與失落。",
-      example: "她在他的眼底看見舊夢，也看見不肯說出口的告別。",
-    },
-    {
-      id: "word-foreshadow",
-      term: "伏筆",
-      word: "伏筆",
-      tag: "敘事",
-      tags: ["線索", "懸疑", "結構"],
-      tone: "正式",
-      meaning: "提前埋下之後會回收的線索或暗示。",
-      example: "窗沿上的黑色玉扣，是整章最安靜的伏筆。",
-    },
-    {
-      id: "word-prophecy",
-      term: "一語成讖",
-      word: "一語成讖",
-      tag: "成語",
-      tags: ["成語", "命運", "轉折"],
-      tone: "悲傷",
-      meaning: "不經意說出的話後來竟然應驗。",
-      example: "白若寧那句玩笑話，到了天亮時竟一語成讖。",
-    },
-  ],
+  savedWords: [],
 };
+
+const legacyDefaultSavedWordIds = new Set([
+  "word-moonlight",
+  "word-cold-lamp",
+  "word-old-dream",
+  "word-foreshadow",
+  "word-prophecy",
+]);
 
 export function createWorkspaceData(overrides = {}) {
   const defaults = structuredClone(defaultWorkspaceData);
@@ -178,6 +135,7 @@ export function createWorkspaceData(overrides = {}) {
   const graphIds = new Set(relationshipNodes.map((node) => node.characterId));
   const relationshipEdges = rawRelationships.edges.filter((edge) => graphIds.has(edge.from) && graphIds.has(edge.to));
   const customTypes = normalizeRelationshipTypes(rawRelationships.customTypes ?? []);
+  const savedWords = normalizeSavedWords(overrides.savedWords ?? defaults.savedWords);
 
   return {
     ...defaults,
@@ -189,8 +147,13 @@ export function createWorkspaceData(overrides = {}) {
       nodes: relationshipNodes,
       edges: relationshipEdges,
     },
+    savedWords,
     schemaVersion: STORAGE_SCHEMA_VERSION,
   };
+}
+
+function normalizeSavedWords(words = []) {
+  return words.filter((word) => !legacyDefaultSavedWordIds.has(word?.id));
 }
 
 function normalizeRelationshipTypes(types) {
