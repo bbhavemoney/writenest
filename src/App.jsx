@@ -40,7 +40,7 @@ import {
   Users,
   ChevronDown,
 } from "lucide-react";
-import { createEmptyCharacter, createWorkspaceData, roleTypeOptions } from "./dataModel.js";
+import { createEmptyCharacter, createWorkspaceData, plainTextToHtml, roleTypeOptions } from "./dataModel.js";
 import { loadWorkspaceData, saveWorkspaceData } from "./storage.js";
 import { fuzzySearch, wordBank } from "./data/wordBank.js";
 
@@ -376,8 +376,29 @@ function App() {
     notify("已匯出 JSON 備份");
   }
 
-  async function importProjectBackup(file) {
+  async function importWorkspaceFile(file) {
     if (!file) return;
+
+    if (file.name.toLowerCase().endsWith(".txt")) {
+      try {
+        const rawText = await file.text();
+        const importedNovel = createNovelFromText(rawText, file.name);
+        const nextData = createWorkspaceData({
+          ...workspaceData,
+          projects: [importedNovel.project, ...workspaceData.projects],
+          documents: [...importedNovel.documents, ...workspaceData.documents],
+        });
+
+        setWorkspaceData(nextData);
+        setActiveDocumentId(importedNovel.documents[0].id);
+        setActiveTab("editor");
+        await saveWorkspaceData(nextData);
+        notify(`已匯入《${importedNovel.project.title}》，共 ${importedNovel.documents.length} 章`);
+      } catch {
+        notify("匯入失敗，請確認 TXT 檔案包含文字內容。");
+      }
+      return;
+    }
 
     try {
       const rawText = await file.text();
@@ -630,7 +651,7 @@ function App() {
           insertText={insertText}
           addProject={addProject}
           exportProjectBackup={exportProjectBackup}
-          importProjectBackup={importProjectBackup}
+          importWorkspaceFile={importWorkspaceFile}
         />
       );
     }
@@ -647,7 +668,7 @@ function App() {
           deleteDocument={deleteDocument}
           exportDocument={exportDocument}
           exportProjectBackup={exportProjectBackup}
-          importProjectBackup={importProjectBackup}
+          importWorkspaceFile={importWorkspaceFile}
           copyText={copyText}
           insertText={insertText}
           setActiveTab={setActiveTab}
@@ -761,7 +782,7 @@ function App() {
   );
 }
 
-function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBackup, importProjectBackup }) {
+function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBackup, importWorkspaceFile }) {
   const recentDocuments = data.documents.slice(0, 3);
   const importInputRef = useRef(null);
   const savedWordPreview = data.savedWords.slice(0, 8);
@@ -849,7 +870,7 @@ function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBa
               匯出 JSON
             </button>
             <button className="ghost-button compact" onClick={() => importInputRef.current?.click()}>
-              匯入資料
+              匯入 TXT / JSON
             </button>
             <button className="ghost-button compact" onClick={() => setActiveTab("format")}>
               清理草稿
@@ -865,9 +886,9 @@ function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBa
           ref={importInputRef}
           className="hidden-file-input"
           type="file"
-          accept="application/json,.json"
+          accept="text/plain,application/json,.txt,.json"
           onChange={(event) => {
-            importProjectBackup(event.target.files?.[0]);
+            importWorkspaceFile(event.target.files?.[0]);
             event.target.value = "";
           }}
         />
@@ -886,7 +907,7 @@ function EditorPage({
   deleteDocument,
   exportDocument,
   exportProjectBackup,
-  importProjectBackup,
+  importWorkspaceFile,
   copyText,
   insertText,
   setActiveTab,
@@ -995,7 +1016,7 @@ function EditorPage({
                 備份 JSON
               </button>
               <button className="ghost-button compact" onClick={() => importInputRef.current?.click()}>
-                匯入
+                匯入 TXT / JSON
               </button>
             </div>
           </details>
@@ -1003,9 +1024,9 @@ function EditorPage({
             ref={importInputRef}
             className="hidden-file-input"
             type="file"
-            accept="application/json,.json"
+            accept="text/plain,application/json,.txt,.json"
             onChange={(event) => {
-              importProjectBackup(event.target.files?.[0]);
+              importWorkspaceFile(event.target.files?.[0]);
               event.target.value = "";
             }}
           />
@@ -2232,6 +2253,63 @@ function downloadFile(filename, type, content) {
 
 function sanitizeFilename(value) {
   return (value || "writenest-document").replace(/[\\/:*?"<>|]/g, "-").trim() || "writenest-document";
+}
+
+function createNovelFromText(rawText, filename) {
+  const text = normalizePlainText(rawText.replace(/^\uFEFF/, ""));
+  if (!text) throw new Error("Empty text file");
+
+  const lines = text.split("\n");
+  const firstContentIndex = lines.findIndex((line) => line.trim());
+  const bookTitleMatch = lines[firstContentIndex]?.trim().match(/^《(.+)》$/);
+  const fallbackTitle = filename.replace(/\.txt$/i, "").trim() || "匯入作品";
+  const projectTitle = bookTitleMatch?.[1].trim() || fallbackTitle;
+  const chapterPattern = /^\s*(第[零〇一二三四五六七八九十百千0-9０-９]+[章回節卷][^\n]*|Chapter\s+\d+[^\n]*)\s*$/i;
+  const chapterStarts = lines
+    .map((line, index) => (chapterPattern.test(line) ? index : -1))
+    .filter((index) => index >= 0);
+  const timestamp = Date.now();
+  const projectId = `project-import-${timestamp}`;
+
+  const chapters = chapterStarts.length
+    ? chapterStarts.map((start, index) => {
+        const end = chapterStarts[index + 1] ?? lines.length;
+        const chapterLines = lines.slice(start, end);
+        if (index === 0) {
+          const preamble = lines
+            .slice(0, start)
+            .filter((line, lineIndex) => !(bookTitleMatch && lineIndex === firstContentIndex))
+            .join("\n")
+            .trim();
+          if (preamble) chapterLines.splice(1, 0, "", preamble);
+        }
+        return {
+          title: lines[start].trim(),
+          content: normalizePlainText(chapterLines.join("\n")),
+        };
+      })
+    : [{ title: projectTitle, content: text }];
+
+  const documents = chapters.map((chapter, index) => ({
+    id: `doc-import-${timestamp}-${index + 1}`,
+    projectId,
+    title: chapter.title,
+    kind: "小說",
+    updatedAt: "剛剛",
+    content: chapter.content,
+    contentHtml: plainTextToHtml(chapter.content),
+  }));
+
+  return {
+    project: {
+      id: projectId,
+      title: projectTitle,
+      type: "小說",
+      updatedAt: "剛剛",
+      documentIds: documents.map((document) => document.id),
+    },
+    documents,
+  };
 }
 
 function formatDateStamp(date) {
