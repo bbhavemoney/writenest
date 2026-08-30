@@ -263,6 +263,40 @@ function App() {
     notify("已新增章節");
   }
 
+  function addProject() {
+    const newIndex = workspaceData.projects.length + 1;
+    const timestamp = Date.now();
+    const projectId = `project-${timestamp}`;
+    const documentId = `doc-${timestamp}`;
+    const projectTitle = `新作品 ${newIndex}`;
+    const newDocument = {
+      id: documentId,
+      projectId,
+      title: `${projectTitle} 起始章`,
+      kind: "小說",
+      updatedAt: "剛剛",
+      content: "",
+      contentHtml: "<p></p>",
+    };
+    const newProject = {
+      id: projectId,
+      title: projectTitle,
+      type: "小說",
+      updatedAt: "剛剛",
+      documentIds: [documentId],
+    };
+
+    updateWorkspace((current) => ({
+      ...current,
+      projects: [newProject, ...current.projects],
+      documents: [newDocument, ...current.documents],
+    }), { persistNow: true });
+
+    setActiveDocumentId(documentId);
+    setActiveTab("editor");
+    notify(`已建立：${projectTitle}`);
+  }
+
   function deleteDocument(documentId) {
     if (workspaceData.documents.length <= 1) {
       notify("至少需要保留一篇文章");
@@ -594,6 +628,7 @@ function App() {
           data={workspaceData}
           setActiveTab={setActiveTab}
           insertText={insertText}
+          addProject={addProject}
           exportProjectBackup={exportProjectBackup}
           importProjectBackup={importProjectBackup}
         />
@@ -726,7 +761,7 @@ function App() {
   );
 }
 
-function Dashboard({ data, setActiveTab, insertText, exportProjectBackup, importProjectBackup }) {
+function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBackup, importProjectBackup }) {
   const recentDocuments = data.documents.slice(0, 3);
   const importInputRef = useRef(null);
   const savedWordPreview = data.savedWords.slice(0, 8);
@@ -807,6 +842,9 @@ function Dashboard({ data, setActiveTab, insertText, exportProjectBackup, import
         <div className="quick-actions">
           <h3>快速操作</h3>
           <div className="quick-action-grid">
+            <button className="ghost-button compact" onClick={addProject}>
+              建立新作品
+            </button>
             <button className="ghost-button compact" onClick={exportProjectBackup}>
               匯出 JSON
             </button>
