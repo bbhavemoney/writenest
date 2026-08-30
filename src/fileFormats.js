@@ -65,7 +65,6 @@ function createNovelFromText(rawText, filename, suggestedTitle = "") {
 
   const documents = chapters.map((chapter, index) => ({
     id: `doc-import-${timestamp}-${index + 1}`,
-    projectId,
     title: chapter.title,
     kind: "小說",
     updatedAt: "剛剛",
@@ -77,11 +76,15 @@ function createNovelFromText(rawText, filename, suggestedTitle = "") {
     project: {
       id: projectId,
       title: projectTitle,
-      type: "小說",
+      genre: "小說",
+      description: `從 ${filename} 匯入的作品`,
       updatedAt: "剛剛",
-      documentIds: documents.map((document) => document.id),
+      chapters: documents,
+      characters: [],
+      relationships: { customTypes: [], nodes: [], edges: [] },
+      favoriteWords: [],
+      writingStats: { todayWords: 0, totalWords: 0 },
     },
-    documents,
   };
 }
 

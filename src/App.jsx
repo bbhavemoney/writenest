@@ -40,12 +40,13 @@ import {
   Users,
   ChevronDown,
 } from "lucide-react";
-import { createEmptyCharacter, createWorkspaceData, roleTypeOptions } from "./dataModel.js";
+import { createEmptyCharacter, createProject, createWorkspaceData, roleTypeOptions } from "./dataModel.js";
 import { createDocumentExport, importNovelFile } from "./fileFormats.js";
 import { loadWorkspaceData, saveWorkspaceData } from "./storage.js";
 import { fuzzySearch, wordBank } from "./data/wordBank.js";
 
 const tabs = [
+  { id: "library", label: "圖書館", icon: BookOpen },
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "editor", label: "Editor", icon: PenLine },
   { id: "words", label: "模糊找詞", icon: Search },
@@ -92,7 +93,7 @@ function CharacterFlowNode({ data }) {
 function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [workspaceData, setWorkspaceData] = useState(() => createWorkspaceData());
-  const [activeDocumentId, setActiveDocumentId] = useState("doc-station");
+  const [activeDocumentId, setActiveDocumentId] = useState(null);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [wordTypeFilter, setWordTypeFilter] = useState("全部");
@@ -100,9 +101,10 @@ function App() {
   const [toast, setToast] = useState("");
   const [isLoaded, setIsLoaded] = useState(false);
   const [saveStatus, setSaveStatus] = useState("loading");
+  const [libraryCreateRequest, setLibraryCreateRequest] = useState(0);
 
-  const activeDocument =
-    workspaceData.documents.find((document) => document.id === activeDocumentId) ?? workspaceData.documents[0];
+  const activeProject = workspaceData.projects.find((project) => project.id === workspaceData.activeProjectId) ?? null;
+  const activeDocument = activeProject?.chapters.find((chapter) => chapter.id === activeDocumentId) ?? activeProject?.chapters[0] ?? null;
 
   const editor = useEditor(
     {
@@ -121,7 +123,7 @@ function App() {
         });
       },
     },
-    [activeDocumentId, isLoaded]
+    [workspaceData.activeProjectId, activeDocumentId, isLoaded]
   );
 
   useEffect(() => {
@@ -143,7 +145,8 @@ function App() {
         const storedData = await loadWorkspaceData();
         if (!cancelled) {
           setWorkspaceData(storedData);
-          setActiveDocumentId(storedData.documents[0]?.id ?? "doc-station");
+          const storedProject = storedData.projects.find((project) => project.id === storedData.activeProjectId) ?? storedData.projects[0];
+          setActiveDocumentId(storedProject?.chapters[0]?.id ?? null);
           setIsLoaded(true);
           setSaveStatus("saved");
         }
@@ -184,8 +187,8 @@ function App() {
   }, [deferredQuery, wordTypeFilter]);
 
   const charactersById = useMemo(
-    () => Object.fromEntries(workspaceData.characters.map((character) => [character.id, character])),
-    [workspaceData.characters]
+    () => Object.fromEntries((activeProject?.characters ?? []).map((character) => [character.id, character])),
+    [activeProject?.characters]
   );
 
   function notify(message) {
@@ -218,6 +221,22 @@ function App() {
     }
   }
 
+  function updateActiveProject(updater, options = {}) {
+    if (!workspaceData.activeProjectId) return;
+    updateWorkspace((current) => ({
+      ...current,
+      projects: current.projects.map((project) => project.id === current.activeProjectId ? updater(project) : project),
+    }), options);
+  }
+
+  function switchProject(projectId, destination = "dashboard") {
+    const project = workspaceData.projects.find((item) => item.id === projectId);
+    if (!project) return;
+    updateWorkspace((current) => ({ ...current, activeProjectId: projectId }), { persistNow: true });
+    setActiveDocumentId(project.chapters[0]?.id ?? null);
+    setActiveTab(destination);
+  }
+
   function updateActiveDocument(nextContent) {
     const contentPatch =
       typeof nextContent === "string"
@@ -227,23 +246,22 @@ function App() {
           }
         : nextContent;
 
-    updateWorkspace((current) => ({
-      ...current,
-      documents: current.documents.map((document) =>
-        document.id === activeDocumentId ? { ...document, ...contentPatch, updatedAt: "剛剛" } : document
-      ),
-      projects: current.projects.map((project) =>
-        project.documentIds.includes(activeDocumentId) ? { ...project, updatedAt: "剛剛" } : project
-      ),
-    }));
+    updateActiveProject((project) => {
+      const chapters = project.chapters.map((chapter) => chapter.id === activeDocumentId ? { ...chapter, ...contentPatch, updatedAt: "剛剛" } : chapter);
+      return {
+        ...project,
+        updatedAt: "剛剛",
+        chapters,
+        writingStats: { ...project.writingStats, totalWords: countWords(chapters), todayWords: countWords(chapters) },
+      };
+    });
   }
 
   function addDocument() {
-    const newIndex = workspaceData.documents.length + 1;
-    const projectId = activeDocument?.projectId ?? workspaceData.projects[0]?.id ?? "project-rain-city";
+    if (!activeProject) return;
+    const newIndex = activeProject.chapters.length + 1;
     const newDocument = {
       id: `doc-${Date.now()}`,
-      projectId,
       title: `新章節 ${newIndex}`,
       kind: formatMode === "paper" ? "論文" : "小說",
       updatedAt: "剛剛",
@@ -251,69 +269,46 @@ function App() {
       contentHtml: `<h1>新章節 ${newIndex}</h1><p>在這裡開始整理你的想法。</p>`,
     };
 
-    updateWorkspace((current) => ({
-      ...current,
-      documents: [newDocument, ...current.documents],
-      projects: current.projects.map((project) =>
-        project.id === projectId
-          ? { ...project, documentIds: [newDocument.id, ...project.documentIds], updatedAt: "剛剛" }
-          : project
-      ),
-    }), { persistNow: true });
+    updateActiveProject((project) => ({ ...project, chapters: [newDocument, ...project.chapters], updatedAt: "剛剛" }), { persistNow: true });
     setActiveDocumentId(newDocument.id);
     notify("已新增章節");
   }
 
-  function addProject() {
-    const newIndex = workspaceData.projects.length + 1;
-    const timestamp = Date.now();
-    const projectId = `project-${timestamp}`;
-    const documentId = `doc-${timestamp}`;
-    const projectTitle = `新作品 ${newIndex}`;
-    const newDocument = {
-      id: documentId,
-      projectId,
-      title: `${projectTitle} 起始章`,
-      kind: "小說",
-      updatedAt: "剛剛",
-      content: "",
-      contentHtml: "<p></p>",
-    };
-    const newProject = {
-      id: projectId,
-      title: projectTitle,
-      type: "小說",
-      updatedAt: "剛剛",
-      documentIds: [documentId],
-    };
-
+  function addProject(projectDetails) {
+    const newProject = createProject(projectDetails);
     updateWorkspace((current) => ({
       ...current,
       projects: [newProject, ...current.projects],
-      documents: [newDocument, ...current.documents],
+      activeProjectId: newProject.id,
     }), { persistNow: true });
+    setActiveDocumentId(null);
+    setActiveTab("dashboard");
+    notify(`已建立：${newProject.title}`);
+  }
 
-    setActiveDocumentId(documentId);
-    setActiveTab("editor");
-    notify(`已建立：${projectTitle}`);
+  function deleteProject(projectId) {
+    if (workspaceData.projects.length <= 1) {
+      notify("至少需要保留一本作品");
+      return;
+    }
+    const project = workspaceData.projects.find((item) => item.id === projectId);
+    if (!project || !window.confirm(`確定刪除《${project.title}》嗎？此操作會刪除作品內所有資料。`)) return;
+    const remaining = workspaceData.projects.filter((item) => item.id !== projectId);
+    const nextActiveId = workspaceData.activeProjectId === projectId ? remaining[0].id : workspaceData.activeProjectId;
+    updateWorkspace((current) => ({ ...current, projects: current.projects.filter((item) => item.id !== projectId), activeProjectId: nextActiveId }), { persistNow: true });
+    const nextProject = remaining.find((item) => item.id === nextActiveId);
+    setActiveDocumentId(nextProject?.chapters[0]?.id ?? null);
+    notify("作品已刪除");
   }
 
   function deleteDocument(documentId) {
-    if (workspaceData.documents.length <= 1) {
+    if (!activeProject || activeProject.chapters.length <= 1) {
       notify("至少需要保留一篇文章");
       return;
     }
 
-    const nextDocument = workspaceData.documents.find((document) => document.id !== documentId);
-    updateWorkspace((current) => ({
-      ...current,
-      documents: current.documents.filter((document) => document.id !== documentId),
-      projects: current.projects.map((project) => ({
-        ...project,
-        documentIds: project.documentIds.filter((id) => id !== documentId),
-        updatedAt: project.documentIds.includes(documentId) ? "剛剛" : project.updatedAt,
-      })),
-    }), { persistNow: true });
+    const nextDocument = activeProject.chapters.find((chapter) => chapter.id !== documentId);
+    updateActiveProject((project) => ({ ...project, chapters: project.chapters.filter((chapter) => chapter.id !== documentId), updatedAt: "剛剛" }), { persistNow: true });
 
     if (activeDocumentId === documentId && nextDocument) {
       setActiveDocumentId(nextDocument.id);
@@ -376,10 +371,7 @@ function App() {
       app: "WriteNest",
       schemaVersion: workspaceData.schemaVersion,
       projects: workspaceData.projects,
-      documents: workspaceData.documents,
-      characters: workspaceData.characters,
-      relationships: workspaceData.relationships,
-      savedWords: workspaceData.savedWords,
+      activeProjectId: workspaceData.activeProjectId,
     };
 
     downloadFile(`writenest-backup-${formatDateStamp(new Date())}.json`, "application/json;charset=utf-8", JSON.stringify(backup, null, 2));
@@ -393,16 +385,15 @@ function App() {
       try {
         const importedNovel = await importNovelFile(file);
         const nextData = createWorkspaceData({
-          ...workspaceData,
           projects: [importedNovel.project, ...workspaceData.projects],
-          documents: [...importedNovel.documents, ...workspaceData.documents],
+          activeProjectId: importedNovel.project.id,
         });
 
         setWorkspaceData(nextData);
-        setActiveDocumentId(importedNovel.documents[0].id);
+        setActiveDocumentId(importedNovel.project.chapters[0]?.id ?? null);
         setActiveTab("editor");
         await saveWorkspaceData(nextData);
-        notify(`已匯入《${importedNovel.project.title}》，共 ${importedNovel.documents.length} 章`);
+        notify(`已匯入《${importedNovel.project.title}》，共 ${importedNovel.project.chapters.length} 章`);
       } catch {
         notify("匯入失敗，請確認小說檔案是有效的 TXT、DOCX 或 EPUB。");
       }
@@ -412,13 +403,7 @@ function App() {
     try {
       const rawText = await file.text();
       const backup = JSON.parse(rawText);
-      const importedData = createWorkspaceData({
-        projects: backup.projects,
-        documents: backup.documents,
-        characters: backup.characters,
-        relationships: backup.relationships,
-        savedWords: backup.savedWords,
-      });
+      const importedData = createWorkspaceData(backup);
       const shouldOverwrite = window.confirm("匯入備份會覆蓋目前 WriteNest 本機資料。按確定覆蓋，按取消可選擇合併。");
       const nextData = shouldOverwrite
         ? importedData
@@ -432,7 +417,8 @@ function App() {
       }
 
       setWorkspaceData(nextData);
-      setActiveDocumentId(nextData.documents[0]?.id ?? "doc-station");
+      const nextProject = nextData.projects.find((project) => project.id === nextData.activeProjectId) ?? nextData.projects[0];
+      setActiveDocumentId(nextProject?.chapters[0]?.id ?? null);
       await saveWorkspaceData(nextData);
       notify(shouldOverwrite ? "已覆蓋本機資料" : "已合併備份資料");
     } catch {
@@ -442,16 +428,10 @@ function App() {
 
   function saveWord(word) {
     const term = getWordText(word);
-    const exists = workspaceData.savedWords.some((item) => getWordText(item) === term);
+    const exists = activeProject?.favoriteWords.some((item) => getWordText(item) === term);
 
     if (exists) {
-      updateWorkspace((current) => ({
-        ...current,
-        savedWords: current.savedWords.filter((item) => getWordText(item) !== term),
-      }), { persistNow: true });
-
-      const localWords = JSON.parse(localStorage.getItem("writenest.savedWords.v1") ?? "[]");
-      localStorage.setItem("writenest.savedWords.v1", JSON.stringify(localWords.filter((item) => getWordText(item) !== term)));
+      updateActiveProject((project) => ({ ...project, favoriteWords: project.favoriteWords.filter((item) => getWordText(item) !== term) }), { persistNow: true });
       notify(`已取消收藏：${term}`);
       return;
     }
@@ -469,18 +449,7 @@ function App() {
       tone: Array.isArray(word.tone) ? word.tone : [word.tone].filter(Boolean),
     };
 
-    updateWorkspace((current) => {
-      return {
-        ...current,
-        savedWords: [
-          savedWord,
-          ...current.savedWords,
-        ],
-      };
-    }, { persistNow: true });
-
-    const localWords = JSON.parse(localStorage.getItem("writenest.savedWords.v1") ?? "[]");
-    localStorage.setItem("writenest.savedWords.v1", JSON.stringify([savedWord, ...localWords.filter((item) => getWordText(item) !== term)]));
+    updateActiveProject((project) => ({ ...project, favoriteWords: [savedWord, ...project.favoriteWords] }), { persistNow: true });
     notify(`已收藏：${term}`);
   }
 
@@ -499,18 +468,18 @@ function App() {
       return false;
     }
 
-    updateWorkspace((current) => {
-      const exists = current.characters.some((item) => item.id === cleanCharacter.id);
+    updateActiveProject((project) => {
+      const exists = project.characters.some((item) => item.id === cleanCharacter.id);
       return {
-        ...current,
+        ...project,
         characters: exists
-          ? current.characters.map((item) => (item.id === cleanCharacter.id ? cleanCharacter : item))
-          : [...current.characters, cleanCharacter],
+          ? project.characters.map((item) => (item.id === cleanCharacter.id ? cleanCharacter : item))
+          : [...project.characters, cleanCharacter],
         relationships: exists
-          ? current.relationships
+          ? project.relationships
           : {
-              ...current.relationships,
-              nodes: [...current.relationships.nodes, { characterId: cleanCharacter.id, x: 160, y: 160 }],
+              ...project.relationships,
+              nodes: [...project.relationships.nodes, { characterId: cleanCharacter.id, x: 160, y: 160 }],
             },
       };
     }, { persistNow: true });
@@ -520,13 +489,13 @@ function App() {
   }
 
   function deleteCharacter(characterId) {
-    updateWorkspace((current) => ({
-      ...current,
-      characters: current.characters.filter((character) => character.id !== characterId),
+    updateActiveProject((project) => ({
+      ...project,
+      characters: project.characters.filter((character) => character.id !== characterId),
       relationships: {
-        ...current.relationships,
-        nodes: current.relationships.nodes.filter((node) => node.characterId !== characterId),
-        edges: current.relationships.edges.filter((edge) => edge.from !== characterId && edge.to !== characterId),
+        ...project.relationships,
+        nodes: project.relationships.nodes.filter((node) => node.characterId !== characterId),
+        edges: project.relationships.edges.filter((edge) => edge.from !== characterId && edge.to !== characterId),
       },
     }), { persistNow: true });
     notify("角色已刪除");
@@ -536,16 +505,16 @@ function App() {
     if (!characterId) return;
 
     let alreadyExists = false;
-    updateWorkspace((current) => {
-      if (current.relationships.nodes.some((node) => node.characterId === characterId)) {
+    updateActiveProject((project) => {
+      if (project.relationships.nodes.some((node) => node.characterId === characterId)) {
         alreadyExists = true;
-        return current;
+        return project;
       }
       return {
-        ...current,
+        ...project,
         relationships: {
-          ...current.relationships,
-          nodes: [...current.relationships.nodes, { characterId, x: 180, y: 180 }],
+          ...project.relationships,
+          nodes: [...project.relationships.nodes, { characterId, x: 180, y: 180 }],
         },
       };
     }, { persistNow: true });
@@ -554,7 +523,7 @@ function App() {
 
   function addNewRelationshipCharacter() {
     const character = createEmptyCharacter();
-    const index = workspaceData.characters.length + 1;
+    const index = (activeProject?.characters.length ?? 0) + 1;
     const nextCharacter = {
       ...character,
       fullName: `新角色 ${index}`,
@@ -562,22 +531,22 @@ function App() {
       description: "可以在角色資料庫補充這個角色的設定。",
     };
 
-    updateWorkspace((current) => ({
-      ...current,
-      characters: [...current.characters, nextCharacter],
+    updateActiveProject((project) => ({
+      ...project,
+      characters: [...project.characters, nextCharacter],
       relationships: {
-        ...current.relationships,
-        nodes: [...current.relationships.nodes, { characterId: nextCharacter.id, x: 220, y: 220 }],
+        ...project.relationships,
+        nodes: [...project.relationships.nodes, { characterId: nextCharacter.id, x: 220, y: 220 }],
       },
     }), { persistNow: true });
     notify("已新增角色節點");
   }
 
   function updateRelationshipNodes(nextFlowNodes) {
-    updateWorkspace((current) => ({
-      ...current,
+    updateActiveProject((project) => ({
+      ...project,
       relationships: {
-        ...current.relationships,
+        ...project.relationships,
         nodes: nextFlowNodes.map((node) => ({
           characterId: node.id,
           x: node.position.x,
@@ -588,10 +557,10 @@ function App() {
   }
 
   function updateRelationshipEdges(nextFlowEdges) {
-    updateWorkspace((current) => ({
-      ...current,
+    updateActiveProject((project) => ({
+      ...project,
       relationships: {
-        ...current.relationships,
+        ...project.relationships,
         edges: nextFlowEdges.map((edge) => ({
           id: edge.id,
           from: edge.source,
@@ -605,34 +574,34 @@ function App() {
   }
 
   function replaceRelationshipEdges(nextEdges) {
-    updateWorkspace((current) => ({
-      ...current,
+    updateActiveProject((project) => ({
+      ...project,
       relationships: {
-        ...current.relationships,
+        ...project.relationships,
         edges: nextEdges,
       },
     }), { persistNow: true });
   }
 
   function updateRelationshipEdge(edgeId, patch) {
-    updateWorkspace((current) => ({
-      ...current,
+    updateActiveProject((project) => ({
+      ...project,
       relationships: {
-        ...current.relationships,
-        edges: current.relationships.edges.map((edge) => (edge.id === edgeId ? { ...edge, ...patch } : edge)),
+        ...project.relationships,
+        edges: project.relationships.edges.map((edge) => (edge.id === edgeId ? { ...edge, ...patch } : edge)),
       },
     }), { persistNow: true });
   }
 
   function saveRelationshipType(nextType) {
-    updateWorkspace((current) => {
-      const customTypes = current.relationships.customTypes ?? [];
+    updateActiveProject((project) => {
+      const customTypes = project.relationships.customTypes ?? [];
       const exists = customTypes.some((type) => type.label === nextType.label);
 
       return {
-        ...current,
+        ...project,
         relationships: {
-          ...current.relationships,
+          ...project.relationships,
           customTypes: exists
             ? customTypes.map((type) => (type.label === nextType.label ? { ...type, color: nextType.color } : type))
             : [...customTypes, nextType],
@@ -642,23 +611,37 @@ function App() {
   }
 
   function deleteRelationshipType(label) {
-    updateWorkspace((current) => ({
-      ...current,
+    updateActiveProject((project) => ({
+      ...project,
       relationships: {
-        ...current.relationships,
-        customTypes: (current.relationships.customTypes ?? []).filter((type) => type.label !== label),
+        ...project.relationships,
+        customTypes: (project.relationships.customTypes ?? []).filter((type) => type.label !== label),
       },
     }), { persistNow: true });
   }
 
   function renderPage() {
+    if (activeTab === "library") {
+      return (
+        <Library
+          projects={workspaceData.projects}
+          activeProjectId={workspaceData.activeProjectId}
+          enterProject={switchProject}
+          addProject={addProject}
+          deleteProject={deleteProject}
+          createRequest={libraryCreateRequest}
+        />
+      );
+    }
+    if (!activeProject) {
+      return <EmptyState title="尚未選擇作品" description="請先到圖書館選擇或建立一本作品。" />;
+    }
     if (activeTab === "dashboard") {
       return (
         <Dashboard
-          data={workspaceData}
+          data={activeProject}
           setActiveTab={setActiveTab}
           insertText={insertText}
-          addProject={addProject}
           exportProjectBackup={exportProjectBackup}
           importWorkspaceFile={importWorkspaceFile}
         />
@@ -667,7 +650,7 @@ function App() {
     if (activeTab === "editor") {
       return (
         <EditorPage
-          data={workspaceData}
+          data={activeProject}
           activeDocument={activeDocument}
           editor={editor}
           formatMode={formatMode}
@@ -692,7 +675,7 @@ function App() {
           wordTypeFilter={wordTypeFilter}
           setWordTypeFilter={setWordTypeFilter}
           results={filteredWords}
-          savedWords={workspaceData.savedWords}
+          savedWords={activeProject.favoriteWords}
           copyText={copyText}
           insertText={insertText}
           saveWord={saveWord}
@@ -702,7 +685,7 @@ function App() {
     if (activeTab === "characters") {
       return (
         <CharacterLibrary
-          characters={workspaceData.characters}
+          characters={activeProject.characters}
           copyText={copyText}
           insertText={insertText}
           saveCharacter={saveCharacter}
@@ -713,10 +696,10 @@ function App() {
     if (activeTab === "map") {
       return (
         <RelationMap
-          nodes={workspaceData.relationships.nodes}
-          relations={workspaceData.relationships.edges}
-          customRelationshipTypes={workspaceData.relationships.customTypes ?? []}
-          characters={workspaceData.characters}
+          nodes={activeProject.relationships.nodes}
+          relations={activeProject.relationships.edges}
+          customRelationshipTypes={activeProject.relationships.customTypes ?? []}
+          characters={activeProject.characters}
           charactersById={charactersById}
           setActiveTab={setActiveTab}
           addRelationshipNode={addRelationshipNode}
@@ -735,7 +718,7 @@ function App() {
         mode={formatMode}
         setMode={setFormatMode}
         document={activeDocument}
-        characters={workspaceData.characters}
+        characters={activeProject.characters}
         applyFormattedDocument={applyFormattedDocument}
         copyText={copyText}
       />
@@ -752,6 +735,24 @@ function App() {
             <small>創作者工作台</small>
           </div>
         </div>
+        <div className="project-switcher">
+          <small>目前作品</small>
+          <select
+            aria-label="目前作品"
+            value={workspaceData.activeProjectId ?? ""}
+            onChange={(event) => {
+              if (event.target.value === "__new__") {
+                setLibraryCreateRequest((current) => current + 1);
+                setActiveTab("library");
+              } else {
+                switchProject(event.target.value, activeTab === "library" ? "dashboard" : activeTab);
+              }
+            }}
+          >
+            {workspaceData.projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}
+            <option value="__new__">＋ 新增作品</option>
+          </select>
+        </div>
         <nav className="nav-list" aria-label="主導覽">
           {tabs.map((tab) => {
             const Icon = tab.icon;
@@ -765,7 +766,7 @@ function App() {
         </nav>
         <div className="sidebar-note">
           <BookOpen size={18} />
-          <span>今日已寫 {countWords(workspaceData.documents)} 字</span>
+          <span>今日已寫 {countWords(activeProject?.chapters ?? [])} 字</span>
         </div>
       </aside>
 
@@ -777,7 +778,7 @@ function App() {
           </div>
           <div className="topbar-actions">
             <span className={`save-pill ${saveStatus}`}>{getSaveStatusText(saveStatus)}</span>
-            <button className="primary-button" onClick={() => setActiveTab("editor")}>
+            <button className="primary-button" onClick={() => setActiveTab(activeProject ? "editor" : "library")}>
               <PenLine size={18} />
               開始寫作
             </button>
@@ -791,10 +792,82 @@ function App() {
   );
 }
 
-function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBackup, importWorkspaceFile }) {
-  const recentDocuments = data.documents.slice(0, 3);
+function Library({ projects, activeProjectId, enterProject, addProject, deleteProject, createRequest }) {
+  const [isCreating, setIsCreating] = useState(false);
+  const [draft, setDraft] = useState({ title: "", genre: "小說", description: "" });
+
+  useEffect(() => {
+    if (createRequest) setIsCreating(true);
+  }, [createRequest]);
+
+  function submitProject(event) {
+    event.preventDefault();
+    if (!draft.title.trim()) return;
+    addProject(draft);
+    setDraft({ title: "", genre: "小說", description: "" });
+    setIsCreating(false);
+  }
+
+  return (
+    <section className="library-page">
+      <div className="library-heading">
+        <div>
+          <span>你的作品書架</span>
+          <h2>圖書館</h2>
+          <p>每本作品都有獨立的章節、角色、關係圖與收藏詞語。</p>
+        </div>
+        <button className="primary-button" onClick={() => setIsCreating((current) => !current)}>
+          <Plus size={17} />新增作品
+        </button>
+      </div>
+
+      {isCreating && (
+        <form className="library-create-form" onSubmit={submitProject}>
+          <label>書名<input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="輸入作品名稱" autoFocus /></label>
+          <label>類型<input value={draft.genre} onChange={(event) => setDraft({ ...draft, genre: event.target.value })} placeholder="例如：奇幻、推理" /></label>
+          <label className="library-description-field">簡介<textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="簡短描述這本作品" rows={3} /></label>
+          <div className="button-row">
+            <button className="primary-button" type="submit" disabled={!draft.title.trim()}>建立作品</button>
+            <button className="ghost-button" type="button" onClick={() => setIsCreating(false)}>取消</button>
+          </div>
+        </form>
+      )}
+
+      <div className="library-shelf">
+        {projects.map((project, index) => (
+          <article className={project.id === activeProjectId ? "library-book-card active" : "library-book-card"} key={project.id} style={{ "--book-index": index }}>
+            <div className="library-book-spine" aria-hidden="true" />
+            <div className="library-book-content">
+              <div className="library-book-meta">
+                <span>{project.genre}</span>
+                {project.id === activeProjectId && <em>目前作品</em>}
+              </div>
+              <h3>{project.title}</h3>
+              <p>{project.description || "尚未填寫作品簡介。"}</p>
+              <div className="library-book-stats">
+                <span><strong>{project.chapters.length}</strong> 章節</span>
+                <span><strong>{project.characters.length}</strong> 角色</span>
+                <span><strong>{countWords(project.chapters).toLocaleString()}</strong> 字</span>
+              </div>
+              <small>最近編輯：{project.updatedAt}</small>
+              <div className="library-book-actions">
+                <button className="primary-button compact" onClick={() => enterProject(project.id, "dashboard")}>進入作品</button>
+                <button className="icon-button danger" aria-label={`刪除 ${project.title}`} title="刪除作品" onClick={() => deleteProject(project.id)} disabled={projects.length <= 1}>
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function Dashboard({ data, setActiveTab, insertText, exportProjectBackup, importWorkspaceFile }) {
+  const recentDocuments = data.chapters.slice(0, 3);
   const importInputRef = useRef(null);
-  const savedWordPreview = data.savedWords.slice(0, 8);
+  const savedWordPreview = data.favoriteWords.slice(0, 8);
 
   return (
     <section className="page-grid">
@@ -803,16 +876,16 @@ function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBa
           <span>今日寫作</span>
           <BookOpen size={18} />
         </div>
-        <strong>{countWords(data.documents).toLocaleString()}</strong>
-        <small>富文本內容會自動保存到 IndexedDB</small>
+        <strong>{countWords(data.chapters).toLocaleString()}</strong>
+        <small>{data.chapters.length} 個章節，內容自動保存到本機</small>
       </div>
       <div className="metric-card soft-blue dashboard-metric" style={{ "--item-index": 1 }}>
         <div className="metric-head">
-          <span>收藏詞語</span>
-          <Heart size={18} />
+          <span>章節數</span>
+          <FileText size={18} />
         </div>
-        <strong>{data.savedWords.length}</strong>
-        <small>{data.savedWords.length ? `最近新增：${data.savedWords.slice(0, 2).map((word) => getWordText(word)).join("、")}` : "尚未收藏詞語"}</small>
+        <strong>{data.chapters.length}</strong>
+        <small>{data.chapters.length ? `最近編輯：${data.chapters[0].title}` : "尚未建立章節"}</small>
       </div>
       <div className="metric-card soft-mint dashboard-metric" style={{ "--item-index": 2 }}>
         <div className="metric-head">
@@ -858,7 +931,7 @@ function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBa
           <Heart size={18} />
         </div>
         <div className="chip-cloud">
-          {data.savedWords.length ? (
+          {data.favoriteWords.length ? (
             savedWordPreview.map((word, index) => (
               <button className="chip dashboard-saved-chip" key={word.id} style={{ "--item-index": index }} onClick={() => insertText(getWordText(word))}>
                 {getWordText(word)}
@@ -872,9 +945,7 @@ function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBa
         <div className="quick-actions">
           <h3>快速操作</h3>
           <div className="quick-action-grid">
-            <button className="ghost-button compact" onClick={addProject}>
-              建立新作品
-            </button>
+            <button className="ghost-button compact" onClick={() => setActiveTab("library")}>前往圖書館</button>
             <button className="ghost-button compact" onClick={exportProjectBackup}>
               匯出 JSON
             </button>
@@ -992,8 +1063,8 @@ function EditorPage({
                 </button>
               </div>
             </div>
-            {data.documents.length ? (
-              data.documents.map((document) => (
+            {data.chapters.length ? (
+              data.chapters.map((document) => (
                 <div className={document.id === activeDocument?.id ? "chapter active" : "chapter"} key={document.id}>
                   <button className="chapter-select" onClick={() => setActiveDocumentId(document.id)}>
                     <span>{document.title}</span>
@@ -1079,15 +1150,15 @@ function EditorPage({
             <ToolShortcut icon={Sparkles} title={formatMode === "paper" ? "論文模式" : "小說模式"} action={() => setFormatMode(formatMode === "paper" ? "novel" : "paper")} />
             <ToolShortcut
               icon={Heart}
-              title={`收藏詞語${data.savedWords.length ? ` (${data.savedWords.length})` : ""}`}
+              title={`收藏詞語${data.favoriteWords.length ? ` (${data.favoriteWords.length})` : ""}`}
               action={() => setIsSavedWordsOpen((current) => !current)}
               active={isSavedWordsOpen}
               ariaExpanded={isSavedWordsOpen}
             />
             {isSavedWordsOpen && (
               <div className="saved-word-list">
-                {data.savedWords.length ? (
-                  data.savedWords.map((word) => (
+                {data.favoriteWords.length ? (
+                  data.favoriteWords.map((word) => (
                     <button className="saved-word-item" key={word.id} onClick={() => insertText(getWordText(word))}>
                       <span>{getWordText(word)}</span>
                       <Plus size={13} />
@@ -2294,25 +2365,13 @@ function documentToMarkdown(document) {
 
 function mergeWorkspaceData(currentData, importedData) {
   return createWorkspaceData({
-    ...currentData,
     projects: mergeById(currentData.projects, importedData.projects),
-    documents: mergeById(currentData.documents, importedData.documents),
-    characters: mergeById(currentData.characters, importedData.characters),
-    relationships: {
-      customTypes: mergeByLabel(currentData.relationships.customTypes ?? [], importedData.relationships.customTypes ?? []),
-      nodes: mergeByKey(currentData.relationships.nodes, importedData.relationships.nodes, "characterId"),
-      edges: mergeById(currentData.relationships.edges, importedData.relationships.edges),
-    },
-    savedWords: mergeByKey(currentData.savedWords, importedData.savedWords, (word) => getWordText(word) || word.id),
+    activeProjectId: currentData.activeProjectId,
   });
 }
 
 function mergeById(currentItems = [], importedItems = []) {
   return mergeByKey(currentItems, importedItems, "id");
-}
-
-function mergeByLabel(currentItems = [], importedItems = []) {
-  return mergeByKey(currentItems, importedItems, "label");
 }
 
 function mergeByKey(currentItems = [], importedItems = [], key) {
