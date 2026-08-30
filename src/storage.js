@@ -2,8 +2,8 @@ import localforage from "localforage";
 import { createWorkspaceData, STORAGE_SCHEMA_VERSION } from "./dataModel.js";
 
 const LEGACY_WORKSPACE_KEY = "writenest.workspace.v1";
-const PROJECTS_KEY = "writenest.projects.v2";
-const ACTIVE_PROJECT_KEY = "writenest.activeProjectId.v2";
+const PROJECTS_KEY = "writenest.projects.v3";
+const ACTIVE_PROJECT_KEY = "writenest.activeProjectId.v3";
 
 localforage.config({
   name: "WriteNest",

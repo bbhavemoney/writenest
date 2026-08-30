@@ -127,14 +127,29 @@ function migrateLegacyWorkspace(legacy) {
   const firstProjectId = legacyProjects[0].id;
   const projects = legacyProjects.map((project) => {
     const chapterIds = new Set(project.documentIds ?? []);
-    return normalizeProject({
+    const migratedProject = normalizeProject({
       ...project,
       chapters: (legacy.documents ?? []).filter((chapter) => chapter.projectId === project.id || chapterIds.has(chapter.id)),
       characters: project.id === firstProjectId ? legacy.characters ?? [] : [],
       relationships: project.id === firstProjectId ? legacy.relationships : undefined,
       favoriteWords: project.id === firstProjectId ? legacy.savedWords ?? [] : [],
     });
+    if (project.id !== "project-moon-road") return migratedProject;
+    const moonSeed = normalizeProject(structuredClone(defaultWorkspaceData.projects[0]));
+    return {
+      ...migratedProject,
+      title: "月下渡輪",
+      genre: moonSeed.genre,
+      description: migratedProject.description || moonSeed.description,
+      chapters: migratedProject.chapters.length >= 3 ? migratedProject.chapters : [...migratedProject.chapters, moonSeed.chapters[2]],
+    };
   });
+  const hasMigratedMoonSeed = legacyProjects.some((project) => project.id === "project-moon-road");
+  const requiredSeeds = defaultWorkspaceData.projects.filter((seed) => {
+    if (seed.id === "project-moon-ferry" && hasMigratedMoonSeed) return false;
+    return !projects.some((project) => project.id === seed.id);
+  });
+  projects.push(...requiredSeeds.map((seed) => normalizeProject(structuredClone(seed))));
   return { schemaVersion: STORAGE_SCHEMA_VERSION, projects, activeProjectId: projects.some((project) => project.id === legacy.activeProjectId) ? legacy.activeProjectId : projects[0]?.id ?? null };
 }
 
