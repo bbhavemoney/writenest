@@ -40,7 +40,8 @@ import {
   Users,
   ChevronDown,
 } from "lucide-react";
-import { createEmptyCharacter, createWorkspaceData, plainTextToHtml, roleTypeOptions } from "./dataModel.js";
+import { createEmptyCharacter, createWorkspaceData, roleTypeOptions } from "./dataModel.js";
+import { createDocumentExport, importNovelFile } from "./fileFormats.js";
 import { loadWorkspaceData, saveWorkspaceData } from "./storage.js";
 import { fuzzySearch, wordBank } from "./data/wordBank.js";
 
@@ -351,13 +352,22 @@ function App() {
     notify("已完成排版並更新文章");
   }
 
-  function exportDocument(format) {
+  async function exportDocument(format) {
     if (!activeDocument) return;
 
     const filename = `${sanitizeFilename(activeDocument.title)}.${format}`;
-    const content = format === "md" ? documentToMarkdown(activeDocument) : activeDocument.content;
-    downloadFile(filename, format === "md" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8", content);
-    notify(`已匯出 ${filename}`);
+    try {
+      if (format === "txt" || format === "md") {
+        const content = format === "md" ? documentToMarkdown(activeDocument) : activeDocument.content;
+        downloadFile(filename, format === "md" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8", content);
+      } else {
+        const exported = await createDocumentExport(activeDocument, format);
+        downloadBlob(filename, exported.blob);
+      }
+      notify(`已匯出 ${filename}`);
+    } catch {
+      notify(`匯出 ${format.toUpperCase()} 失敗`);
+    }
   }
 
   function exportProjectBackup() {
@@ -379,10 +389,9 @@ function App() {
   async function importWorkspaceFile(file) {
     if (!file) return;
 
-    if (file.name.toLowerCase().endsWith(".txt")) {
+    if (/\.(txt|docx|epub)$/i.test(file.name)) {
       try {
-        const rawText = await file.text();
-        const importedNovel = createNovelFromText(rawText, file.name);
+        const importedNovel = await importNovelFile(file);
         const nextData = createWorkspaceData({
           ...workspaceData,
           projects: [importedNovel.project, ...workspaceData.projects],
@@ -395,7 +404,7 @@ function App() {
         await saveWorkspaceData(nextData);
         notify(`已匯入《${importedNovel.project.title}》，共 ${importedNovel.documents.length} 章`);
       } catch {
-        notify("匯入失敗，請確認 TXT 檔案包含文字內容。");
+        notify("匯入失敗，請確認小說檔案是有效的 TXT、DOCX 或 EPUB。");
       }
       return;
     }
@@ -870,7 +879,7 @@ function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBa
               匯出 JSON
             </button>
             <button className="ghost-button compact" onClick={() => importInputRef.current?.click()}>
-              匯入 TXT / JSON
+              匯入小說 / 備份
             </button>
             <button className="ghost-button compact" onClick={() => setActiveTab("format")}>
               清理草稿
@@ -886,7 +895,7 @@ function Dashboard({ data, setActiveTab, insertText, addProject, exportProjectBa
           ref={importInputRef}
           className="hidden-file-input"
           type="file"
-          accept="text/plain,application/json,.txt,.json"
+          accept="text/plain,application/json,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.json,.epub,.docx"
           onChange={(event) => {
             importWorkspaceFile(event.target.files?.[0]);
             event.target.value = "";
@@ -917,6 +926,7 @@ function EditorPage({
   const [isSavedWordsOpen, setIsSavedWordsOpen] = useState(false);
   const [isToolDrawerOpen, setIsToolDrawerOpen] = useState(true);
   const [insertHint, setInsertHint] = useState("");
+  const [exportFormat, setExportFormat] = useState("txt");
   const importInputRef = useRef(null);
   const insertHintTimerRef = useRef(null);
 
@@ -952,6 +962,14 @@ function EditorPage({
     } else {
       insertText(value);
     }
+  }
+
+  function exportSelectedFormat() {
+    if (exportFormat === "json") {
+      exportProjectBackup();
+      return;
+    }
+    exportDocument(exportFormat);
   }
 
   useEffect(() => {
@@ -1006,17 +1024,18 @@ function EditorPage({
           <details className="more-actions">
             <summary>更多操作</summary>
             <div className="export-button-row">
-              <button className="ghost-button compact" onClick={() => exportDocument("txt")} disabled={!activeDocument}>
-                匯出 TXT
-              </button>
-              <button className="ghost-button compact" onClick={() => exportDocument("md")} disabled={!activeDocument}>
-                匯出 MD
-              </button>
-              <button className="ghost-button compact" onClick={exportProjectBackup}>
-                備份 JSON
+              <select aria-label="匯出格式" value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
+                <option value="txt">TXT 文章</option>
+                <option value="md">Markdown 文章</option>
+                <option value="docx">DOCX 文章</option>
+                <option value="epub">EPUB 電子書</option>
+                <option value="json">JSON 完整備份</option>
+              </select>
+              <button className="ghost-button compact" onClick={exportSelectedFormat} disabled={!activeDocument && exportFormat !== "json"}>
+                匯出
               </button>
               <button className="ghost-button compact" onClick={() => importInputRef.current?.click()}>
-                匯入 TXT / JSON
+                匯入小說 / 備份
               </button>
             </div>
           </details>
@@ -1024,7 +1043,7 @@ function EditorPage({
             ref={importInputRef}
             className="hidden-file-input"
             type="file"
-            accept="text/plain,application/json,.txt,.json"
+            accept="text/plain,application/json,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.json,.epub,.docx"
             onChange={(event) => {
               importWorkspaceFile(event.target.files?.[0]);
               event.target.value = "";
@@ -2241,6 +2260,10 @@ function getWordText(word) {
 
 function downloadFile(filename, type, content) {
   const blob = new Blob([content], { type });
+  downloadBlob(filename, blob);
+}
+
+function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -2253,63 +2276,6 @@ function downloadFile(filename, type, content) {
 
 function sanitizeFilename(value) {
   return (value || "writenest-document").replace(/[\\/:*?"<>|]/g, "-").trim() || "writenest-document";
-}
-
-function createNovelFromText(rawText, filename) {
-  const text = normalizePlainText(rawText.replace(/^\uFEFF/, ""));
-  if (!text) throw new Error("Empty text file");
-
-  const lines = text.split("\n");
-  const firstContentIndex = lines.findIndex((line) => line.trim());
-  const bookTitleMatch = lines[firstContentIndex]?.trim().match(/^《(.+)》$/);
-  const fallbackTitle = filename.replace(/\.txt$/i, "").trim() || "匯入作品";
-  const projectTitle = bookTitleMatch?.[1].trim() || fallbackTitle;
-  const chapterPattern = /^\s*(第[零〇一二三四五六七八九十百千0-9０-９]+[章回節卷][^\n]*|Chapter\s+\d+[^\n]*)\s*$/i;
-  const chapterStarts = lines
-    .map((line, index) => (chapterPattern.test(line) ? index : -1))
-    .filter((index) => index >= 0);
-  const timestamp = Date.now();
-  const projectId = `project-import-${timestamp}`;
-
-  const chapters = chapterStarts.length
-    ? chapterStarts.map((start, index) => {
-        const end = chapterStarts[index + 1] ?? lines.length;
-        const chapterLines = lines.slice(start, end);
-        if (index === 0) {
-          const preamble = lines
-            .slice(0, start)
-            .filter((line, lineIndex) => !(bookTitleMatch && lineIndex === firstContentIndex))
-            .join("\n")
-            .trim();
-          if (preamble) chapterLines.splice(1, 0, "", preamble);
-        }
-        return {
-          title: lines[start].trim(),
-          content: normalizePlainText(chapterLines.join("\n")),
-        };
-      })
-    : [{ title: projectTitle, content: text }];
-
-  const documents = chapters.map((chapter, index) => ({
-    id: `doc-import-${timestamp}-${index + 1}`,
-    projectId,
-    title: chapter.title,
-    kind: "小說",
-    updatedAt: "剛剛",
-    content: chapter.content,
-    contentHtml: plainTextToHtml(chapter.content),
-  }));
-
-  return {
-    project: {
-      id: projectId,
-      title: projectTitle,
-      type: "小說",
-      updatedAt: "剛剛",
-      documentIds: documents.map((document) => document.id),
-    },
-    documents,
-  };
 }
 
 function formatDateStamp(date) {
